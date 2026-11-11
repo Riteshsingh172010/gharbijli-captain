@@ -88,34 +88,40 @@ class IncomingCallActivity : ComponentActivity() {
                     remainingSeconds = remainingSeconds,
                     onAccept = {
                         stopRingtoneAndVibration()
+                        val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager
+                        nm?.cancel(me.gharbijli.partner.service.CaptainDutyService.NOTIFICATION_ID_CALL)
                         val sessionManager = SessionManager(applicationContext)
                         val token = "Bearer ${sessionManager.getToken() ?: ""}"
                         val apiService = PartnerApiService.create()
+                        val targetId = if (!bookingId.isNullOrBlank()) bookingId else (dispatchId ?: "")
 
                         // Call accept
                         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                             try {
-                                apiService.acceptBooking(token, bookingId)
+                                apiService.acceptBooking(token, targetId)
                             } catch (_: Exception) {}
                         }
 
                         // Open main activity with booking
                         val mainIntent = Intent(this@IncomingCallActivity, MainActivity::class.java).apply {
                             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            putExtra("bookingId", bookingId)
+                            putExtra("bookingId", targetId.replace("disp_", ""))
                         }
                         startActivity(mainIntent)
                         finish()
                     },
                     onDecline = {
                         stopRingtoneAndVibration()
+                        val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager
+                        nm?.cancel(me.gharbijli.partner.service.CaptainDutyService.NOTIFICATION_ID_CALL)
                         val sessionManager = SessionManager(applicationContext)
                         val token = "Bearer ${sessionManager.getToken() ?: ""}"
                         val apiService = PartnerApiService.create()
+                        val targetId = if (!bookingId.isNullOrBlank()) bookingId else (dispatchId ?: "")
 
                         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                             try {
-                                apiService.rejectBooking(token, bookingId)
+                                apiService.rejectBooking(token, targetId)
                             } catch (_: Exception) {}
                         }
                         finish()

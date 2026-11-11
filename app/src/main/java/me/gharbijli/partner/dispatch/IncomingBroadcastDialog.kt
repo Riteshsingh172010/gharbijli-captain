@@ -123,8 +123,9 @@ fun IncomingBroadcastDialog(
                 Spacer(modifier = Modifier.height(18.dp))
 
                 // Payout Badge
+                val displayPayout = if (request.payoutAmount > 0) request.payoutAmount else 50
                 Text(
-                    text = "₹${request.payoutAmount}",
+                    text = "₹$displayPayout",
                     fontSize = 32.sp,
                     fontWeight = FontWeight.Bold,
                     color = EmeraldDark
