@@ -1,5 +1,6 @@
 package me.gharbijli.partner.service
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -38,16 +39,20 @@ class CaptainDutyService : Service() {
 
         fun startDuty(context: Context) {
             val intent = Intent(context, CaptainDutyService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (_: Exception) {}
         }
 
         fun stopDuty(context: Context) {
             val intent = Intent(context, CaptainDutyService::class.java)
-            context.stopService(intent)
+            try {
+                context.stopService(intent)
+            } catch (_: Exception) {}
         }
     }
 
@@ -66,7 +71,7 @@ class CaptainDutyService : Service() {
                 PowerManager.PARTIAL_WAKE_LOCK,
                 "GharBijliPartner:DutyServiceWakeLock"
             )?.apply {
-                acquire(10 * 60 * 1000L /* 10 minutes */)
+                acquire(24 * 60 * 60 * 1000L /* 24 hours */)
             }
         } catch (_: Exception) {}
     }
@@ -74,6 +79,34 @@ class CaptainDutyService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startPollingForBookings()
         return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        // Electrician closed/swiped app - keep duty alive like WhatsApp
+        scheduleServiceRestart()
+    }
+
+    private fun scheduleServiceRestart() {
+        val sessionManager = SessionManager(applicationContext)
+        if (sessionManager.isLoggedIn() && sessionManager.isOnline()) {
+            try {
+                val restartIntent = Intent(applicationContext, CaptainDutyService::class.java)
+                val pendingIntent = PendingIntent.getService(
+                    applicationContext,
+                    901,
+                    restartIntent,
+                    PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+                )
+                val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+                val triggerAt = System.currentTimeMillis() + 1500L
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager?.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
+                } else {
+                    alarmManager?.set(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
+                }
+            } catch (_: Exception) {}
+        }
     }
 
     private fun startPollingForBookings() {
@@ -117,7 +150,7 @@ class CaptainDutyService : Service() {
                     stopSelf()
                     break
                 }
-                delay(3000)
+                delay(2500)
             }
             isPolling = false
         }
@@ -128,14 +161,25 @@ class CaptainDutyService : Service() {
         val targetDispatchId = request.dispatchId.ifBlank { "disp_$targetBookingId" }
         val payout = if (request.payoutAmount > 0) request.payoutAmount else 50
 
-        // 1. Full Screen Intent for IncomingCallActivity
+        // 1. Wake screen up immediately (turn on display if dark/locked)
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            @Suppress("DEPRECATION")
+            val screenWakeLock = powerManager?.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
+                "GharBijliPartner:ScreenWakeLock"
+            )
+            screenWakeLock?.acquire(30000L) // 30 seconds
+        } catch (_: Exception) {}
+
+        // 2. Full Screen Intent for IncomingCallActivity
         val fullScreenIntent = Intent(this, IncomingCallActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
             putExtra("dispatchId", targetDispatchId)
             putExtra("bookingId", targetBookingId)
-            putExtra("serviceName", request.serviceName ?: "Electrical Repair")
+            putExtra("serviceName", request.serviceName ?: "Electrical Service")
             putExtra("locality", request.locality ?: "Bhilai")
             putExtra("address", request.customerAddress ?: "Bhilai, Chhattisgarh")
             putExtra("payoutAmount", payout)
@@ -150,7 +194,7 @@ class CaptainDutyService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // 2. Build High Priority Call Notification (Wakes device & rings like WhatsApp)
+        // 3. Build High Priority Call Notification (Wakes device & rings like WhatsApp)
         val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
 
@@ -172,11 +216,9 @@ class CaptainDutyService : Service() {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
         notificationManager?.notify(NOTIFICATION_ID_CALL, callNotification)
 
-        // 3. Direct Activity Launch if Overlay Permission or Screen is On
+        // 4. Direct Activity Launch if Overlay Permission is granted or screen can be popped
         try {
-            if (Settings.canDrawOverlays(this)) {
-                startActivity(fullScreenIntent)
-            }
+            startActivity(fullScreenIntent)
         } catch (_: Exception) {}
     }
 
@@ -208,7 +250,6 @@ class CaptainDutyService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val manager = getSystemService(NotificationManager::class.java)
 
-            // Low priority duty background channel
             val dutyChannel = NotificationChannel(
                 CHANNEL_DUTY,
                 "Captain Active Duty",
@@ -218,7 +259,6 @@ class CaptainDutyService : Service() {
                 setShowBadge(false)
             }
 
-            // High priority call channel with ringtone and vibration
             val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
                 ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
             val audioAttributes = AudioAttributes.Builder()
@@ -244,6 +284,7 @@ class CaptainDutyService : Service() {
     }
 
     override fun onDestroy() {
+        scheduleServiceRestart()
         serviceScope.cancel()
         dismissIncomingCallNotification()
         try {

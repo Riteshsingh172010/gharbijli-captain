@@ -42,6 +42,7 @@ import me.gharbijli.partner.dashboard.DashboardScreen
 import me.gharbijli.partner.data.PartnerApiService
 import me.gharbijli.partner.data.SessionManager
 import me.gharbijli.partner.earnings.EarningsScreen
+import me.gharbijli.partner.service.CaptainDutyService
 import me.gharbijli.partner.ui.theme.GharBijliPartnerTheme
 import me.gharbijli.partner.ui.theme.PrimaryBlue
 
@@ -49,10 +50,13 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var sessionManager: SessionManager
     private lateinit var apiService: PartnerApiService
+    private var permissionStateTrigger by mutableStateOf(0)
 
     private val requestNotificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { _ -> }
+    ) { _ ->
+        permissionStateTrigger++
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,12 +71,28 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Start background duty service if electrician was previously logged in and online
+        if (sessionManager.isLoggedIn() && sessionManager.isOnline()) {
+            CaptainDutyService.startDuty(this)
+        }
+
         val incomingBookingId = intent?.getStringExtra("bookingId")
 
         setContent {
             GharBijliPartnerTheme {
                 val context = LocalContext.current
-                var showPermissionDialog by remember { mutableStateOf(needsCriticalPermissions(context)) }
+                val trigger = permissionStateTrigger
+                val needsOverlay = remember(trigger) { !Settings.canDrawOverlays(context) }
+                val powerManager = remember(trigger) { context.getSystemService(Context.POWER_SERVICE) as? PowerManager }
+                val needsBattery = remember(trigger) { powerManager?.isIgnoringBatteryOptimizations(context.packageName) != true }
+                val needsAlarm = remember(trigger) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+                        alarmManager?.canScheduleExactAlarms() == false
+                    } else false
+                }
+
+                var showPermissionDialog by remember { mutableStateOf(needsOverlay || needsBattery || needsAlarm) }
 
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val navController = rememberNavController()
@@ -156,8 +176,8 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        // WhatsApp Style Incoming Call Permissions Dialog
-                        if (showPermissionDialog) {
+                        // WhatsApp-Style Incoming Call Permissions Dialog
+                        if (showPermissionDialog && (needsOverlay || needsBattery || needsAlarm)) {
                             AlertDialog(
                                 onDismissRequest = { showPermissionDialog = false },
                                 title = {
@@ -170,7 +190,7 @@ class MainActivity : ComponentActivity() {
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text(
-                                            text = "Enable WhatsApp-Style Call Alerts",
+                                            text = "Setup WhatsApp-Style Calling",
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 17.sp
                                         )
@@ -179,13 +199,36 @@ class MainActivity : ComponentActivity() {
                                 text = {
                                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                         Text(
-                                            text = "To receive loud incoming booking calls and alarm rings even when your phone is locked or app is closed, please grant these permissions:",
+                                            text = "To receive loud incoming booking calls and alarm rings even when your phone is locked or app is closed, please grant these 3 permissions:",
                                             fontSize = 13.5.sp,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
 
-                                        // 1. Overlay Permission Button
-                                        if (!Settings.canDrawOverlays(context)) {
+                                        // 1. Exact Alarm Permission (Android 12+)
+                                        if (needsAlarm) {
+                                            Button(
+                                                onClick = {
+                                                    try {
+                                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                                            val intent = Intent(
+                                                                Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                                                                Uri.parse("package:${context.packageName}")
+                                                            )
+                                                            context.startActivity(intent)
+                                                        }
+                                                    } catch (_: Exception) {}
+                                                },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706))
+                                            ) {
+                                                Icon(Icons.Default.Alarm, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text("1. Allow Alarms & Reminders", fontSize = 12.5.sp)
+                                            }
+                                        }
+
+                                        // 2. Overlay Permission Button
+                                        if (needsOverlay) {
                                             Button(
                                                 onClick = {
                                                     try {
@@ -201,14 +244,12 @@ class MainActivity : ComponentActivity() {
                                             ) {
                                                 Icon(Icons.Default.PhoneInTalk, contentDescription = null, modifier = Modifier.size(16.dp))
                                                 Spacer(modifier = Modifier.width(8.dp))
-                                                Text("1. Allow Display Over Other Apps", fontSize = 12.5.sp)
+                                                Text("2. Display Over Other Apps", fontSize = 12.5.sp)
                                             }
                                         }
 
-                                        // 2. Battery Saver Exemption
-                                        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
-                                        val isIgnoringBattery = powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
-                                        if (!isIgnoringBattery) {
+                                        // 3. Battery Saver Exemption
+                                        if (needsBattery) {
                                             Button(
                                                 onClick = {
                                                     try {
@@ -224,31 +265,7 @@ class MainActivity : ComponentActivity() {
                                             ) {
                                                 Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(16.dp))
                                                 Spacer(modifier = Modifier.width(8.dp))
-                                                Text("2. Disable Battery Optimization", fontSize = 12.5.sp)
-                                            }
-                                        }
-
-                                        // 3. Exact Alarm Permission (Android 12+)
-                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
-                                            if (alarmManager?.canScheduleExactAlarms() == false) {
-                                                Button(
-                                                    onClick = {
-                                                        try {
-                                                            val intent = Intent(
-                                                                Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
-                                                                Uri.parse("package:${context.packageName}")
-                                                            )
-                                                            context.startActivity(intent)
-                                                        } catch (_: Exception) {}
-                                                    },
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706))
-                                                ) {
-                                                    Icon(Icons.Default.Alarm, contentDescription = null, modifier = Modifier.size(16.dp))
-                                                    Spacer(modifier = Modifier.width(8.dp))
-                                                    Text("3. Allow Alarms & Reminders", fontSize = 12.5.sp)
-                                                }
+                                                Text("3. Disable Battery Optimization", fontSize = 12.5.sp)
                                             }
                                         }
                                     }
@@ -267,15 +284,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun needsCriticalPermissions(context: Context): Boolean {
-        val needsOverlay = !Settings.canDrawOverlays(context)
-        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
-        val needsBattery = powerManager?.isIgnoringBatteryOptimizations(context.packageName) != true
-        return needsOverlay || needsBattery
-    }
-
     override fun onResume() {
         super.onResume()
+        permissionStateTrigger++
     }
 
     override fun onNewIntent(intent: Intent) {
